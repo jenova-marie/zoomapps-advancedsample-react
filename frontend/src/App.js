@@ -1,209 +1,115 @@
 /* globals zoomSdk */
-import { useLocation, useNavigate } from 'react-router-dom'
-import { useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useState, useEffect } from 'react'
 import { apis } from './apis'
 import { Authorization } from './components/Authorization'
 import ApiScrollview from './components/ApiScrollview'
+import { useZoomApp, useZoomConnect } from './hooks'
+import { startRTMS, stopRTMS } from './utils'
 import './App.css'
 import 'bootstrap/dist/css/bootstrap.min.css'
 
-let once = 0 // to prevent increasing number of event listeners being added
+// All capabilities needed by this app
+const ZOOM_CAPABILITIES = [
+  // APIs demoed in the buttons
+  ...apis.map((api) => api.name),
+
+  // Demo events
+  'onSendAppInvitation',
+  'onShareApp',
+  'onActiveSpeakerChange',
+  'onMeeting',
+
+  // Connect API and events
+  'connect',
+  'onConnect',
+  'postMessage',
+  'onMessage',
+
+  // In-client OAuth API and events
+  'authorize',
+  'onAuthorized',
+  'promptAuthorize',
+  'getUserContext',
+  'onMyUserContextChange',
+  'sendAppInvitationToAllParticipants',
+  'sendAppInvitation',
+
+  // RTMS
+  'startRTMS',
+  'stopRTMS',
+]
 
 function App() {
   const navigate = useNavigate()
-  const location = useLocation()
-  const [error, setError] = useState(null)
   const [user, setUser] = useState(null)
-  const [runningContext, setRunningContext] = useState(null)
-  const [connected, setConnected] = useState(false)
-  const [counter, setCounter] = useState(0)
-  const [preMeeting, setPreMeeting] = useState(true) // start with pre-meeting code
-  const [userContextStatus, setUserContextStatus] = useState('')
-  const [rmtsMessage, setRtmsMessage] = useState('')
+  const [rtmsMessage, setRtmsMessage] = useState('')
 
-  useEffect(() => {
-    async function configureSdk() {
-      // to account for the 2 hour timeout for config
-      const configTimer = setTimeout(() => {
-        setCounter(counter + 1)
-      }, 120 * 60 * 1000)
+  // Tier 1: SDK Configuration
+  const {
+    runningContext,
+    userContextStatus,
+    configured,
+    error,
+  } = useZoomApp(ZOOM_CAPABILITIES)
 
-      try {
-        // Configure the JS SDK, required to call JS APIs in the Zoom App
-        // These items must be selected in the Features -> Zoom App SDK -> Add APIs tool in Marketplace
-        const configResponse = await zoomSdk.config({
-          capabilities: [
-            // apis demoed in the buttons
-            ...apis.map((api) => api.name), // IMPORTANT
-
-            // demo events
-            'onSendAppInvitation',
-            'onShareApp',
-            'onActiveSpeakerChange',
-            'onMeeting',
-
-            // connect api and event
-            'connect',
-            'onConnect',
-            'postMessage',
-            'onMessage',
-
-            // in-client api and event
-            'authorize',
-            'onAuthorized',
-            'promptAuthorize',
-            'getUserContext',
-            'onMyUserContextChange',
-            'sendAppInvitationToAllParticipants',
-            'sendAppInvitation',
-
-            // RTMS
-            'startRTMS',
-            'stopRTMS',
-          ],
-          version: '0.16.0',
-        })
-        console.log('App configured', configResponse)
-        // The config method returns the running context of the Zoom App
-        setRunningContext(configResponse.runningContext)
-        setUserContextStatus(configResponse.auth.status)
-        zoomSdk.onSendAppInvitation((data) => {
-          console.log(data)
-        })
-        zoomSdk.onShareApp((data) => {
-          console.log(data)
-        })
-      } catch (error) {
-        console.log(error)
-        setError('There was an error configuring the JS SDK')
-      }
-      return () => {
-        clearTimeout(configTimer)
-      }
-    }
-    configureSdk()
-  }, [counter])
-
-  // PRE-MEETING
-  let on_message_handler_client = useCallback(
-    (message) => {
-      let content = message.payload.payload
-      if (content === 'connected' && preMeeting === true) {
-        console.log('Meeting instance exists.')
-        zoomSdk.removeEventListener('onMessage', on_message_handler_client)
-        console.log("Letting meeting instance know client's current state.")
-        sendMessage(window.location.hash, 'client')
-        setPreMeeting(false) // client instance is finished with pre-meeting
+  // Tier 3: Cross-instance messaging
+  const { connected, sendMessage } = useZoomConnect(runningContext, {
+    onMessage: (payload) => {
+      // Handle pre-meeting sync: when meeting instance says "connected",
+      // client sends its current route
+      if (payload === 'connected') {
+        sendMessage(window.location.hash)
+      } else {
+        // Navigate to the route sent from other instance
+        navigate({ pathname: payload })
       }
     },
-    [preMeeting]
-  )
+  })
 
-  // PRE-MEETING
+  // Notify meeting instance of route changes
   useEffect(() => {
-    if (runningContext === 'inMainClient' && preMeeting === true) {
-      zoomSdk.addEventListener('onMessage', on_message_handler_client)
+    if (runningContext === 'inMeeting' && connected) {
+      sendMessage(window.location.pathname)
     }
-  }, [on_message_handler_client, preMeeting, runningContext])
+  }, [runningContext, connected, sendMessage, window.location.pathname])
 
-  async function sendMessage(msg, sender) {
-    console.log('Message sent from ' + sender + ' with data: ' + JSON.stringify(msg))
-    console.log('Calling postmessage...', msg)
-    await zoomSdk.postMessage({
-      payload: msg,
-    })
-  }
-
-  const receiveMessage = useCallback(
-    (receiver, reason = '') => {
-      let on_message_handler = (message) => {
-        let content = message.payload.payload
-        console.log('Message received ' + receiver + ' ' + reason + ': ' + content)
-        navigate({ pathname: content })
-      }
-      if (once === 0) {
-        zoomSdk.addEventListener('onMessage', on_message_handler)
-        once = 1
-      }
-    },
-    [navigate]
-  )
-
-  useEffect(() => {
-    async function connectInstances() {
-      // only can call connect when in-meeting
-      if (runningContext === 'inMeeting') {
-        zoomSdk.addEventListener('onConnect', (event) => {
-          console.log('Connected')
-          setConnected(true)
-
-          // PRE-MEETING
-          // first message to send after connecting instances is for the meeting
-          // instance to catch up with the client instance
-          if (preMeeting === true) {
-            console.log('Letting client know meeting instance exists.')
-            sendMessage('connected', 'meeting')
-            console.log("Adding message listener for client's current state.")
-            let on_message_handler_mtg = (message) => {
-              console.log('Message from client received. Meeting instance updating its state:', message.payload.payload)
-              window.location.replace(message.payload.payload)
-              zoomSdk.removeEventListener('onMessage', on_message_handler_mtg)
-              setPreMeeting(false) // meeting instance is finished with pre-meeting
-            }
-            zoomSdk.addEventListener('onMessage', on_message_handler_mtg)
-          }
-        })
-
-        await zoomSdk.connect()
-        console.log('Connecting...')
-      }
-    }
-
-    if (connected === false) {
-      console.log(runningContext, location.pathname)
-      connectInstances()
-    }
-  }, [connected, location.pathname, preMeeting, runningContext])
-
-  // POST-MEETING
-  useEffect(() => {
-    async function communicateTabChange() {
-      // only proceed with post-meeting after pre-meeting is done
-      // just one-way communication from in-meeting to client
-      if (runningContext === 'inMeeting' && connected && preMeeting === false) {
-        sendMessage(location.pathname, runningContext)
-      } else if (runningContext === 'inMainClient' && preMeeting === false) {
-        receiveMessage(runningContext, 'for tab change')
-      }
-    }
-    communicateTabChange()
-  }, [connected, location, preMeeting, receiveMessage, runningContext])
-
-  if (error) {
-    console.log(error)
-    return (
-      <div className='App'>
-        <h1>{error.message}</h1>
-      </div>
-    )
-  }
-
+  // RTMS handlers using utility functions
   const handleStartRTMS = async () => {
-    try {
-      const res = await zoomSdk.callZoomApi('startRTMS')
-      setRtmsMessage(`startRTMS success response: ${res}`)
-    } catch (error) {
-      setRtmsMessage(`startRTMS error response: ${error}`)
+    const result = await startRTMS()
+    if (result.success) {
+      setRtmsMessage(`startRTMS success: ${JSON.stringify(result.data)}`)
+    } else {
+      setRtmsMessage(`startRTMS error: ${result.error}`)
     }
   }
 
   const handleStopRTMS = async () => {
-    try {
-      const res = await zoomSdk.callZoomApi('stopRTMS')
-      setRtmsMessage(`stopRTMS success response: ${res}`)
-    } catch (error) {
-      setRtmsMessage(`stopRTMS error response: ${error}`)
+    const result = await stopRTMS()
+    if (result.success) {
+      setRtmsMessage(`stopRTMS success: ${JSON.stringify(result.data)}`)
+    } else {
+      setRtmsMessage(`stopRTMS error: ${result.error}`)
     }
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <div className='App'>
+        <h1>Error initializing Zoom App</h1>
+        <p>{error.message || String(error)}</p>
+      </div>
+    )
+  }
+
+  // Loading state
+  if (!configured) {
+    return (
+      <div className='App'>
+        <p>Configuring Zoom JavaScript SDK...</p>
+      </div>
+    )
   }
 
   return (
@@ -213,14 +119,12 @@ function App() {
         {user ? ` ${user.first_name} ${user.last_name}` : ' Zoom Apps user'}!
       </h1>
       <p>{`User Context Status: ${userContextStatus}`}</p>
-      <p>{runningContext ? `Running Context: ${runningContext}` : 'Configuring Zoom JavaScript SDK...'}</p>
+      <p>{`Running Context: ${runningContext}`}</p>
 
-      {rmtsMessage && <p className='fw-bold'>{rmtsMessage}</p>}
+      {rtmsMessage && <p className='fw-bold'>{rtmsMessage}</p>}
 
       <ApiScrollview onStartRTMS={handleStartRTMS} onStopRTMS={handleStopRTMS} />
       <Authorization
-        handleError={setError}
-        handleUserContextStatus={setUserContextStatus}
         handleUser={setUser}
         user={user}
         userContextStatus={userContextStatus}
