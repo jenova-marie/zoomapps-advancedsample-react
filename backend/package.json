@@ -10,9 +10,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "vitest run --config vitest.all.config.js --coverage",
     "test:unit": "vitest run tests/unit",
-    "test:integration": "vitest run tests/integration"
+    "test:integration": "vitest run --config vitest.integration.config.js",
+    "test:all": "vitest run --config vitest.all.config.js"
   },
   "dependencies": {
     "axios": "^1.12.0",

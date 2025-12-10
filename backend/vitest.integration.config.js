@@ -5,11 +5,11 @@ export default defineConfig({
     // Test environment
     environment: 'node',
 
-    // Global test timeout
-    testTimeout: 10000,
+    // Longer timeout for integration tests
+    testTimeout: 30000,
 
-    // Include patterns - by default run unit tests only
-    include: ['tests/unit/**/*.test.js'],
+    // Include only integration tests
+    include: ['tests/integration/**/*.test.js'],
 
     // Exclude patterns
     exclude: ['node_modules', 'dist'],
@@ -18,7 +18,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
-      reportsDirectory: './coverage',
+      reportsDirectory: './coverage-integration',
       include: [
         'util/**/*.js',
         'api/**/*.js',
@@ -32,8 +32,8 @@ export default defineConfig({
       ],
     },
 
-    // Setup files run before each test file
-    setupFiles: ['./tests/setup.js'],
+    // Setup files for integration tests
+    setupFiles: ['./tests/integration/setup.js'],
 
     // Global variables available in tests
     globals: true,
@@ -41,13 +41,18 @@ export default defineConfig({
     // Reporter
     reporters: ['verbose'],
 
-    // Pool options for better performance
+    // Run integration tests sequentially to avoid Redis conflicts
     pool: 'forks',
+    poolOptions: {
+      forks: {
+        singleFork: true,
+      },
+    },
 
     // Retry failed tests
     retry: 0,
 
-    // Sequence options
+    // Sequence options - run sequentially
     sequence: {
       shuffle: false,
     },

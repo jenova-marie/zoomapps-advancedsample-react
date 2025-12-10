@@ -5,11 +5,11 @@ export default defineConfig({
     // Test environment
     environment: 'node',
 
-    // Global test timeout
-    testTimeout: 10000,
+    // Longer timeout for integration tests
+    testTimeout: 30000,
 
-    // Include patterns - by default run unit tests only
-    include: ['tests/unit/**/*.test.js'],
+    // Include all tests
+    include: ['tests/**/*.test.js'],
 
     // Exclude patterns
     exclude: ['node_modules', 'dist'],
@@ -18,7 +18,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
-      reportsDirectory: './coverage',
+      reportsDirectory: './coverage-all',
       include: [
         'util/**/*.js',
         'api/**/*.js',
@@ -32,7 +32,7 @@ export default defineConfig({
       ],
     },
 
-    // Setup files run before each test file
+    // Setup files - use unit test setup (integration setup is in integration test files)
     setupFiles: ['./tests/setup.js'],
 
     // Global variables available in tests
@@ -41,7 +41,7 @@ export default defineConfig({
     // Reporter
     reporters: ['verbose'],
 
-    // Pool options for better performance
+    // Use forks for better isolation
     pool: 'forks',
 
     // Retry failed tests
