@@ -18,4 +18,8 @@ COPY . .
 COPY wait-for-it.sh .
 RUN chmod +x wait-for-it.sh
 
+# Add custom CA certificate for TLS connections
+COPY ca-cert.pem /usr/local/share/ca-certificates/recoverysky-root-ca.pem
+ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/recoverysky-root-ca.pem
+
 CMD [ "npm", "start:dev" ]

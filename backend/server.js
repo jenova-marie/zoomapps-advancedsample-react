@@ -5,12 +5,20 @@ require('./config')
 const http = require('http')
 const express = require('express')
 const morgan = require('morgan')
+const { createProxyMiddleware } = require('http-proxy-middleware')
 
 const middleware = require('./middleware')
 
 const zoomAppRouter = require('./api/zoomapp/router')
 const zoomRouter = require('./api/zoom/router')
 const thirdPartyOAuthRouter = require('./api/thirdpartyauth/router')
+
+// Frontend proxy for static assets (Vite build outputs to /assets)
+const frontendProxy = createProxyMiddleware({
+  target: process.env.ZOOM_APP_CLIENT_URL,
+  changeOrigin: true,
+  ws: true,
+})
 // Create app
 const app = express()
 
@@ -44,6 +52,9 @@ app.use('/zoom', zoomRouter)
 app.get('/hello', (req, res) => {
   res.send('Hello Zoom Apps!')
 })
+
+// Proxy frontend static assets (Vite builds to /assets)
+app.use('/assets', frontendProxy)
 
 // Handle 404
 app.use((req, res, next) => {
