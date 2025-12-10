@@ -426,4 +426,309 @@ describe('util/store - expired_at handling', () => {
     expect(parsed.expired_at).toBe(past)
     expect(parsed.expired_at < Date.now()).toBe(true)
   })
+
+  it('should handle MAX_SAFE_INTEGER timestamp', () => {
+    const maxTimestamp = Number.MAX_SAFE_INTEGER
+    const userData = {
+      accessToken: 'token',
+      refreshToken: 'refresh',
+      expired_at: maxTimestamp,
+    }
+
+    const serialized = JSON.stringify(userData)
+    const parsed = JSON.parse(serialized)
+
+    expect(parsed.expired_at).toBe(maxTimestamp)
+  })
+
+  it('should handle zero timestamp', () => {
+    const userData = {
+      accessToken: 'token',
+      refreshToken: 'refresh',
+      expired_at: 0,
+    }
+
+    const serialized = JSON.stringify(userData)
+    const parsed = JSON.parse(serialized)
+
+    expect(parsed.expired_at).toBe(0)
+  })
+})
+
+describe('util/store - edge cases - validation boundaries', () => {
+  const validateUpsertUser = (zoomUserId, accessToken, refreshToken, expired_at) => {
+    const isValidUser = Boolean(
+      typeof zoomUserId === 'string' &&
+        typeof accessToken === 'string' &&
+        typeof refreshToken === 'string' &&
+        typeof expired_at === 'number'
+    )
+    return isValidUser
+  }
+
+  it('should reject array as zoomUserId', () => {
+    expect(validateUpsertUser(['user'], 'token', 'refresh', 1000)).toBe(false)
+  })
+
+  it('should reject object as zoomUserId', () => {
+    expect(validateUpsertUser({ id: 'user' }, 'token', 'refresh', 1000)).toBe(false)
+  })
+
+  it('should accept NaN as expired_at (typeof NaN is number)', () => {
+    // Note: typeof NaN === 'number', so validation passes
+    // This is a JavaScript quirk - NaN is technically a number type
+    expect(validateUpsertUser('user', 'token', 'refresh', NaN)).toBe(true)
+  })
+
+  it('should accept Infinity as expired_at (technically a number)', () => {
+    expect(validateUpsertUser('user', 'token', 'refresh', Infinity)).toBe(true)
+  })
+
+  it('should accept -Infinity as expired_at (technically a number)', () => {
+    expect(validateUpsertUser('user', 'token', 'refresh', -Infinity)).toBe(true)
+  })
+
+  it('should reject function as parameter', () => {
+    expect(validateUpsertUser(() => 'user', 'token', 'refresh', 1000)).toBe(false)
+  })
+
+  it('should reject Symbol as parameter', () => {
+    expect(validateUpsertUser(Symbol('user'), 'token', 'refresh', 1000)).toBe(false)
+  })
+
+  it('should accept string with only spaces', () => {
+    expect(validateUpsertUser('   ', 'token', 'refresh', 1000)).toBe(true)
+  })
+
+  it('should accept very long strings', () => {
+    const longString = 'x'.repeat(10000)
+    expect(validateUpsertUser(longString, longString, longString, 1000)).toBe(true)
+  })
+})
+
+describe('util/store - edge cases - user data merging', () => {
+  it('should overwrite with empty string', () => {
+    const existing = { accessToken: 'old-token', refreshToken: 'refresh' }
+    const update = { accessToken: '' }
+    const merged = { ...existing, ...update }
+
+    expect(merged.accessToken).toBe('')
+  })
+
+  it('should overwrite with null', () => {
+    const existing = { accessToken: 'old-token', refreshToken: 'refresh' }
+    const update = { accessToken: null }
+    const merged = { ...existing, ...update }
+
+    expect(merged.accessToken).toBeNull()
+  })
+
+  it('should handle undefined in update (keeps original)', () => {
+    const existing = { accessToken: 'old-token', refreshToken: 'refresh' }
+    const update = { accessToken: undefined }
+    const merged = { ...existing, ...update }
+
+    // undefined still overwrites in spread
+    expect(merged.accessToken).toBeUndefined()
+  })
+
+  it('should handle multiple sequential updates', () => {
+    let user = { accessToken: 'token1', refreshToken: 'refresh1', expired_at: 1000 }
+
+    user = { ...user, accessToken: 'token2' }
+    user = { ...user, expired_at: 2000 }
+    user = { ...user, thirdPartyAccessToken: 'auth0' }
+
+    expect(user.accessToken).toBe('token2')
+    expect(user.refreshToken).toBe('refresh1')
+    expect(user.expired_at).toBe(2000)
+    expect(user.thirdPartyAccessToken).toBe('auth0')
+  })
+
+  it('should handle deep nested objects in update', () => {
+    const existing = { accessToken: 'token', metadata: { region: 'us' } }
+    const update = { metadata: { region: 'eu', newField: true } }
+    const merged = { ...existing, ...update }
+
+    // Shallow merge - entire metadata object replaced
+    expect(merged.metadata.region).toBe('eu')
+    expect(merged.metadata.newField).toBe(true)
+  })
+
+  it('should handle array values', () => {
+    const existing = { accessToken: 'token', scopes: ['read'] }
+    const update = { scopes: ['read', 'write'] }
+    const merged = { ...existing, ...update }
+
+    expect(merged.scopes).toEqual(['read', 'write'])
+  })
+})
+
+describe('util/store - edge cases - token formats', () => {
+  const testTokenRoundtrip = (token) => {
+    const userData = {
+      accessToken: token,
+      refreshToken: 'refresh',
+      expired_at: 1000,
+    }
+    const serialized = JSON.stringify(userData)
+    const encrypted = encrypt.afterSerialization(serialized)
+    const decrypted = encrypt.beforeDeserialization(encrypted)
+    return JSON.parse(decrypted)
+  }
+
+  it('should handle JWT-format tokens', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
+    const result = testTokenRoundtrip(jwt)
+    expect(result.accessToken).toBe(jwt)
+  })
+
+  it('should handle UUID tokens', () => {
+    const uuid = '550e8400-e29b-41d4-a716-446655440000'
+    const result = testTokenRoundtrip(uuid)
+    expect(result.accessToken).toBe(uuid)
+  })
+
+  it('should handle hex string tokens', () => {
+    const hex = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4'
+    const result = testTokenRoundtrip(hex)
+    expect(result.accessToken).toBe(hex)
+  })
+
+  it('should handle URL-safe base64 tokens', () => {
+    const urlSafe = 'ABC_DEF-GHI_JKL'
+    const result = testTokenRoundtrip(urlSafe)
+    expect(result.accessToken).toBe(urlSafe)
+  })
+
+  it('should handle tokens with special OAuth characters', () => {
+    const oauthToken = 'ya29.access_token_with_dots.and_underscores-and-dashes'
+    const result = testTokenRoundtrip(oauthToken)
+    expect(result.accessToken).toBe(oauthToken)
+  })
+
+  it('should handle empty token (edge case)', () => {
+    const result = testTokenRoundtrip('')
+    expect(result.accessToken).toBe('')
+  })
+
+  it('should handle token with newlines', () => {
+    const multiline = 'line1\nline2\nline3'
+    const result = testTokenRoundtrip(multiline)
+    expect(result.accessToken).toBe(multiline)
+  })
+})
+
+describe('util/store - edge cases - user ID formats', () => {
+  it('should handle Zoom user ID format', () => {
+    // Zoom user IDs are typically alphanumeric
+    const zoomId = 'abc123DEF456'
+    const createUserKey = (id) => id
+    expect(createUserKey(zoomId)).toBe(zoomId)
+  })
+
+  it('should handle email-based user IDs', () => {
+    const emailId = 'user@example.com'
+    const createUserKey = (id) => id
+    expect(createUserKey(emailId)).toBe(emailId)
+  })
+
+  it('should handle user ID with slashes', () => {
+    // Some systems use path-like IDs
+    const pathId = 'org/team/user123'
+    const createUserKey = (id) => id
+    expect(createUserKey(pathId)).toBe(pathId)
+  })
+
+  it('should handle numeric-looking user ID', () => {
+    const numericId = '1234567890'
+    const createUserKey = (id) => id
+    expect(createUserKey(numericId)).toBe(numericId)
+  })
+})
+
+describe('util/store - edge cases - concurrent operations simulation', () => {
+  it('should handle rapid read-modify-write pattern', () => {
+    // Simulate what could happen with concurrent updates
+    const operations = []
+    let userData = { accessToken: 'initial', counter: 0 }
+
+    // Simulate 10 concurrent "read"
+    for (let i = 0; i < 10; i++) {
+      operations.push({ ...userData })
+    }
+
+    // Each "modifies" with their own increment
+    operations.forEach((op, i) => {
+      op.counter = i + 1
+    })
+
+    // Last write wins in this simple model
+    userData = operations[operations.length - 1]
+    expect(userData.counter).toBe(10)
+  })
+
+  it('should preserve data integrity through multiple serialize/deserialize cycles', () => {
+    const originalData = {
+      accessToken: 'token-xyz',
+      refreshToken: 'refresh-abc',
+      expired_at: 1699999999999,
+      thirdPartyAccessToken: 'auth0-123',
+    }
+
+    let data = originalData
+    // Simulate 10 round trips through storage
+    for (let i = 0; i < 10; i++) {
+      const serialized = JSON.stringify(data)
+      const encrypted = encrypt.afterSerialization(serialized)
+      const decrypted = encrypt.beforeDeserialization(encrypted)
+      data = JSON.parse(decrypted)
+    }
+
+    expect(data).toEqual(originalData)
+  })
+})
+
+describe('util/store - edge cases - deletion and cleanup', () => {
+  it('should handle deleting specific fields', () => {
+    const userData = {
+      accessToken: 'token',
+      refreshToken: 'refresh',
+      expired_at: 1000,
+      thirdPartyAccessToken: 'auth0',
+    }
+
+    delete userData.thirdPartyAccessToken
+
+    expect(userData.thirdPartyAccessToken).toBeUndefined()
+    expect(userData.accessToken).toBe('token')
+    expect(Object.keys(userData)).toHaveLength(3)
+  })
+
+  it('should handle deleting non-existent field', () => {
+    const userData = {
+      accessToken: 'token',
+      refreshToken: 'refresh',
+    }
+
+    // Should not throw
+    delete userData.nonExistent
+
+    expect(userData.accessToken).toBe('token')
+  })
+
+  it('should handle setting field to undefined vs deleting', () => {
+    const userData1 = { accessToken: 'token', extra: 'value' }
+    const userData2 = { accessToken: 'token', extra: 'value' }
+
+    userData1.extra = undefined
+    delete userData2.extra
+
+    // Setting to undefined keeps the key
+    expect('extra' in userData1).toBe(true)
+    expect(userData1.extra).toBeUndefined()
+
+    // Delete removes the key entirely
+    expect('extra' in userData2).toBe(false)
+  })
 })

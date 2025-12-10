@@ -221,4 +221,288 @@ describe('util/zoom-helpers', () => {
       expect(challenge).toMatch(/^[A-Za-z0-9_-]+$/)
     })
   })
+
+  describe('createRequestParamString - edge cases', () => {
+    it('should handle undefined values gracefully', () => {
+      const params = {
+        defined: 'value',
+        undef: undefined,
+      }
+      const result = zoomHelpers.createRequestParamString(params)
+      expect(result).toContain('defined=value')
+    })
+
+    it('should handle null values', () => {
+      const params = {
+        defined: 'value',
+        nullVal: null,
+      }
+      const result = zoomHelpers.createRequestParamString(params)
+      expect(result).toContain('defined=value')
+    })
+
+    it('should handle numeric values', () => {
+      const params = {
+        count: 42,
+        float: 3.14,
+      }
+      const result = zoomHelpers.createRequestParamString(params)
+      expect(result).toContain('count=42')
+      expect(result).toContain('float=3.14')
+    })
+
+    it('should handle boolean values', () => {
+      const params = {
+        enabled: true,
+        disabled: false,
+      }
+      const result = zoomHelpers.createRequestParamString(params)
+      expect(result).toContain('enabled=true')
+      expect(result).toContain('disabled=false')
+    })
+
+    it('should handle very long values', () => {
+      const longValue = 'x'.repeat(1000)
+      const params = { long: longValue }
+      const result = zoomHelpers.createRequestParamString(params)
+      expect(result).toContain(`long=${longValue}`)
+    })
+
+    it('should handle URL-unsafe characters', () => {
+      const params = {
+        redirect_uri: 'https://example.com/callback?foo=bar&baz=qux',
+      }
+      const result = zoomHelpers.createRequestParamString(params)
+      // Should be properly encoded
+      expect(result).not.toContain('?foo=bar')
+      expect(result).toContain('redirect_uri=')
+    })
+
+    it('should handle unicode in values', () => {
+      const params = {
+        name: '用户名',
+        emoji: '🔐',
+      }
+      const result = zoomHelpers.createRequestParamString(params)
+      expect(result).toContain('name=')
+      expect(result).toContain('emoji=')
+    })
+
+    it('should handle single parameter', () => {
+      const params = { only: 'one' }
+      const result = zoomHelpers.createRequestParamString(params)
+      expect(result).toBe('only=one')
+      expect(result).not.toContain('&')
+    })
+
+    it('should handle many parameters', () => {
+      const params = {}
+      for (let i = 0; i < 20; i++) {
+        params[`param${i}`] = `value${i}`
+      }
+      const result = zoomHelpers.createRequestParamString(params)
+      expect(result.split('&').length).toBe(20)
+    })
+  })
+
+  describe('generateCodeVerifier - edge cases', () => {
+    it('should generate cryptographically random values', () => {
+      const verifiers = []
+      for (let i = 0; i < 100; i++) {
+        verifiers.push(zoomHelpers.generateCodeVerifier())
+      }
+
+      // Check all are unique
+      const unique = new Set(verifiers)
+      expect(unique.size).toBe(100)
+    })
+
+    it('should have uniform distribution of hex characters', () => {
+      const verifier = zoomHelpers.generateCodeVerifier()
+      const counts = {}
+
+      for (const char of verifier.toLowerCase()) {
+        counts[char] = (counts[char] || 0) + 1
+      }
+
+      // Should have a reasonable distribution (not all the same character)
+      const values = Object.values(counts)
+      const max = Math.max(...values)
+      const min = Math.min(...values)
+
+      // With 128 chars and 16 possible hex digits, expect ~8 per digit
+      // Allow for randomness but flag extreme bias
+      expect(max).toBeLessThan(30) // No single char should appear 30+ times
+      expect(Object.keys(counts).length).toBeGreaterThan(10) // Should use most hex chars
+    })
+  })
+
+  describe('generateCodeChallenge - edge cases', () => {
+    it('should handle empty string verifier', () => {
+      const challenge = zoomHelpers.generateCodeChallenge('')
+      expect(challenge).toBeDefined()
+      expect(typeof challenge).toBe('string')
+    })
+
+    it('should handle very long verifier', () => {
+      const longVerifier = 'a'.repeat(10000)
+      const challenge = zoomHelpers.generateCodeChallenge(longVerifier)
+      expect(challenge).toBeDefined()
+      // SHA256 always produces 32 bytes = 43 base64url chars (without padding)
+      expect(challenge.length).toBe(43)
+    })
+
+    it('should handle special characters in verifier', () => {
+      const specialVerifier = '!@#$%^&*()_+-=[]{}|;:,.<>?'
+      const challenge = zoomHelpers.generateCodeChallenge(specialVerifier)
+      expect(challenge).toBeDefined()
+      expect(challenge).toMatch(/^[A-Za-z0-9_-]+$/)
+    })
+
+    it('should handle unicode verifier', () => {
+      const unicodeVerifier = '验证码🔐مرحبا'
+      const challenge = zoomHelpers.generateCodeChallenge(unicodeVerifier)
+      expect(challenge).toBeDefined()
+      expect(challenge.length).toBe(43)
+    })
+  })
+
+  describe('generateState - edge cases', () => {
+    it('should generate states that are URL-safe after encoding', () => {
+      for (let i = 0; i < 50; i++) {
+        const state = zoomHelpers.generateState()
+        // Should be safe to use in URL
+        const encoded = encodeURIComponent(state)
+        expect(encoded).toBeDefined()
+      }
+    })
+
+    it('should contain two parts separated by dot', () => {
+      const state = zoomHelpers.generateState()
+
+      // State format is HMAC.randomHex
+      const parts = state.split('.')
+      expect(parts.length).toBe(2)
+
+      // First part is HMAC (base64 encoded, may have some chars removed)
+      expect(parts[0].length).toBeGreaterThan(0)
+
+      // Second part is random hex (128 chars from 64 bytes)
+      expect(parts[1].length).toBe(128)
+      expect(parts[1]).toMatch(/^[0-9a-f]+$/i)
+    })
+
+    it('should have HMAC component before dot', () => {
+      const state = zoomHelpers.generateState()
+      const parts = state.split('.')
+
+      // HMAC part should be non-empty
+      expect(parts[0].length).toBeGreaterThan(0)
+    })
+
+    it('should generate different HMACs for different random data', () => {
+      const state1 = zoomHelpers.generateState()
+      const state2 = zoomHelpers.generateState()
+
+      const hmac1 = state1.split('.')[0]
+      const hmac2 = state2.split('.')[0]
+
+      // HMACs should differ because random hex differs
+      expect(hmac1).not.toBe(hmac2)
+    })
+  })
+
+  describe('decryptZoomAppContext - edge cases', () => {
+    it('should throw on null input', () => {
+      expect(() => {
+        zoomHelpers.decryptZoomAppContext(null)
+      }).toThrow()
+    })
+
+    it('should throw on undefined input', () => {
+      expect(() => {
+        zoomHelpers.decryptZoomAppContext(undefined)
+      }).toThrow()
+    })
+
+    it('should throw on numeric input', () => {
+      expect(() => {
+        zoomHelpers.decryptZoomAppContext(12345)
+      }).toThrow()
+    })
+
+    it('should throw on object input', () => {
+      expect(() => {
+        zoomHelpers.decryptZoomAppContext({ context: 'data' })
+      }).toThrow()
+    })
+
+    it('should throw on valid base64 but invalid structure', () => {
+      // Valid base64 but not a valid Zoom context
+      const invalidContext = Buffer.from('not a valid context').toString('base64')
+      expect(() => {
+        zoomHelpers.decryptZoomAppContext(invalidContext)
+      }).toThrow()
+    })
+
+    it('should throw on whitespace-only input', () => {
+      expect(() => {
+        zoomHelpers.decryptZoomAppContext('   ')
+      }).toThrow()
+    })
+
+    it('should throw on context with invalid IV length byte', () => {
+      // First byte indicates IV length, set it to something huge
+      const buffer = Buffer.alloc(50)
+      buffer[0] = 255 // IV length of 255 bytes
+      const context = buffer.toString('base64')
+
+      expect(() => {
+        zoomHelpers.decryptZoomAppContext(context)
+      }).toThrow()
+    })
+  })
+
+  describe('integration - full OAuth parameter generation', () => {
+    it('should generate all required OAuth parameters', () => {
+      const state = zoomHelpers.generateState()
+      const codeVerifier = zoomHelpers.generateCodeVerifier()
+      const codeChallenge = zoomHelpers.generateCodeChallenge(codeVerifier)
+
+      const params = {
+        response_type: 'code',
+        client_id: 'test-client-id',
+        redirect_uri: 'https://example.com/callback',
+        state: state,
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256',
+        scope: 'openid profile email',
+      }
+
+      const queryString = zoomHelpers.createRequestParamString(params)
+
+      expect(queryString).toContain('response_type=code')
+      expect(queryString).toContain('client_id=test-client-id')
+      expect(queryString).toContain('code_challenge_method=S256')
+      expect(queryString).toContain('state=')
+      expect(queryString).toContain('code_challenge=')
+    })
+
+    it('should handle rapid successive calls', () => {
+      const results = []
+      for (let i = 0; i < 100; i++) {
+        results.push({
+          state: zoomHelpers.generateState(),
+          verifier: zoomHelpers.generateCodeVerifier(),
+        })
+      }
+
+      // All should be unique
+      const states = new Set(results.map(r => r.state))
+      const verifiers = new Set(results.map(r => r.verifier))
+
+      expect(states.size).toBe(100)
+      expect(verifiers.size).toBe(100)
+    })
+  })
 })
