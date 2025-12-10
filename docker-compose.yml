@@ -3,11 +3,11 @@ services:
     build: ./backend/.
     tty: true
     working_dir: /home/node/app
-    command: ['npm', 'run', 'start:dev']
+    command: ["npm", "run", "start:dev"]
     platform: linux/amd64
     ports:
-      - '127.0.0.1:3000:3000'
-      - '127.0.0.1:9229:9229'
+      - "127.0.0.1:8000:3000"
+      - "127.0.0.1:9229:9229"
     env_file:
       - ${ENV_FILE:-.env}
     environment:
@@ -34,9 +34,9 @@ services:
     build: ./frontend/.
     tty: true
     working_dir: /home/node/app
-    command: 'npm start'
+    command: "npm start"
     ports:
-      - '127.0.0.1:3001:9090'
+      - "127.0.0.1:3001:9090"
     environment:
       - PORT=9090
       - PUBLIC_URL=${PUBLIC_URL}/api/zoomapp/proxy
@@ -51,18 +51,18 @@ services:
   redis:
     image: redis:alpine
     ports:
-      - '127.0.0.1:6379:6379'
+      - "127.0.0.1:6379:6379"
     volumes:
       - ./data:/data
 
   rtms-websocket:
     build: ./rtms/websocket/.
-    profiles: ['websocket']
+    profiles: ["websocket"]
     tty: true
     working_dir: /home/node/app
     platform: linux/amd64
     ports:
-      - '127.0.0.1:3002:3002'
+      - "127.0.0.1:3002:3002"
     volumes:
       - ./rtms/utils:/home/node/utils
       - ./rtms/websocket/logs:/home/node/app/logs
@@ -70,12 +70,12 @@ services:
 
   rtms-sdk:
     build: ./rtms/sdk/.
-    profiles: ['sdk']
+    profiles: ["sdk"]
     tty: true
     working_dir: /home/node/app
     platform: linux/amd64
     ports:
-      - '127.0.0.1:3003:3003'
+      - "127.0.0.1:3003:3003"
     volumes:
       - ./rtms/utils:/home/node/utils
       - ./rtms/sdk/logs:/home/node/app/logs
