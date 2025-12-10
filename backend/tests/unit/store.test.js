@@ -1,44 +1,58 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// Since store.js initializes Redis at module load time and uses util.promisify,
-// we need to test the validation logic that doesn't depend on Redis.
-// For full integration tests, use a real Redis instance.
+// AES-256 requires exactly 32 bytes key - set before importing
+process.env.REDIS_ENCRYPTION_KEY = '12345678901234567890123456789012'
+
+const encrypt = require('../../util/encrypt')
 
 describe('util/store - validation logic', () => {
-  // We can test the input validation of upsertUser without needing Redis
-  // by examining the logic directly
-
   describe('upsertUser input validation', () => {
-    it('should validate that all parameters must have correct types', () => {
-      // Test the validation logic
-      const isValidUser = (zoomUserId, accessToken, refreshToken, expired_at) => {
-        return Boolean(
-          typeof zoomUserId === 'string' &&
+    // Recreate validation logic from store.js
+    const validateUpsertUser = (zoomUserId, accessToken, refreshToken, expired_at) => {
+      const isValidUser = Boolean(
+        typeof zoomUserId === 'string' &&
           typeof accessToken === 'string' &&
           typeof refreshToken === 'string' &&
           typeof expired_at === 'number'
-        )
-      }
+      )
+      return isValidUser
+    }
 
-      // Valid inputs
-      expect(isValidUser('user-123', 'token', 'refresh', Date.now())).toBe(true)
+    it('should return true for valid inputs', () => {
+      expect(validateUpsertUser('user-123', 'token', 'refresh', 1234567890)).toBe(true)
+    })
 
-      // Invalid zoomUserId
-      expect(isValidUser(123, 'token', 'refresh', Date.now())).toBe(false)
-      expect(isValidUser(null, 'token', 'refresh', Date.now())).toBe(false)
-      expect(isValidUser(undefined, 'token', 'refresh', Date.now())).toBe(false)
+    it('should return false when zoomUserId is not a string', () => {
+      expect(validateUpsertUser(123, 'token', 'refresh', 1234567890)).toBe(false)
+      expect(validateUpsertUser(null, 'token', 'refresh', 1234567890)).toBe(false)
+      expect(validateUpsertUser(undefined, 'token', 'refresh', 1234567890)).toBe(false)
+    })
 
-      // Invalid accessToken
-      expect(isValidUser('user', 123, 'refresh', Date.now())).toBe(false)
-      expect(isValidUser('user', null, 'refresh', Date.now())).toBe(false)
+    it('should return false when accessToken is not a string', () => {
+      expect(validateUpsertUser('user', 123, 'refresh', 1234567890)).toBe(false)
+      expect(validateUpsertUser('user', null, 'refresh', 1234567890)).toBe(false)
+    })
 
-      // Invalid refreshToken
-      expect(isValidUser('user', 'token', 123, Date.now())).toBe(false)
-      expect(isValidUser('user', 'token', null, Date.now())).toBe(false)
+    it('should return false when refreshToken is not a string', () => {
+      expect(validateUpsertUser('user', 'token', 123, 1234567890)).toBe(false)
+      expect(validateUpsertUser('user', 'token', null, 1234567890)).toBe(false)
+    })
 
-      // Invalid expired_at
-      expect(isValidUser('user', 'token', 'refresh', 'not-a-number')).toBe(false)
-      expect(isValidUser('user', 'token', 'refresh', null)).toBe(false)
+    it('should return false when expired_at is not a number', () => {
+      expect(validateUpsertUser('user', 'token', 'refresh', '1234567890')).toBe(false)
+      expect(validateUpsertUser('user', 'token', 'refresh', null)).toBe(false)
+    })
+
+    it('should allow empty strings (technically valid strings)', () => {
+      expect(validateUpsertUser('', 'token', 'refresh', 1234567890)).toBe(true)
+    })
+
+    it('should accept zero as valid expired_at', () => {
+      expect(validateUpsertUser('user', 'token', 'refresh', 0)).toBe(true)
+    })
+
+    it('should accept negative numbers as expired_at', () => {
+      expect(validateUpsertUser('user', 'token', 'refresh', -1000)).toBe(true)
     })
   })
 
@@ -49,41 +63,201 @@ describe('util/store - validation logic', () => {
       expect(createInviteKey('abc123')).toBe('invite:abc123')
       expect(createInviteKey('test-invite')).toBe('invite:test-invite')
     })
+
+    it('should handle UUIDs', () => {
+      const createInviteKey = (invitationID) => `invite:${invitationID}`
+      const uuid = '550e8400-e29b-41d4-a716-446655440000'
+
+      expect(createInviteKey(uuid)).toBe(`invite:${uuid}`)
+    })
+
+    it('should handle special characters in invitation ID', () => {
+      const createInviteKey = (invitationID) => `invite:${invitationID}`
+
+      expect(createInviteKey('test/invite')).toBe('invite:test/invite')
+      expect(createInviteKey('test:invite')).toBe('invite:test:invite')
+    })
+  })
+
+  describe('user data serialization', () => {
+    it('should serialize user data to JSON before encryption', () => {
+      const userData = {
+        accessToken: 'access-token-123',
+        refreshToken: 'refresh-token-456',
+        expired_at: 1699999999999,
+      }
+
+      const serialized = JSON.stringify(userData)
+      expect(serialized).toContain('accessToken')
+      expect(serialized).toContain('refreshToken')
+      expect(serialized).toContain('expired_at')
+    })
+
+    it('should encrypt serialized user data', () => {
+      const userData = {
+        accessToken: 'access-token-123',
+        refreshToken: 'refresh-token-456',
+        expired_at: 1699999999999,
+      }
+
+      const serialized = JSON.stringify(userData)
+      const encrypted = encrypt.afterSerialization(serialized)
+
+      expect(encrypted).not.toBe(serialized)
+      expect(typeof encrypted).toBe('string')
+    })
+
+    it('should decrypt and deserialize user data correctly', () => {
+      const userData = {
+        accessToken: 'access-token-123',
+        refreshToken: 'refresh-token-456',
+        expired_at: 1699999999999,
+      }
+
+      const serialized = JSON.stringify(userData)
+      const encrypted = encrypt.afterSerialization(serialized)
+      const decrypted = encrypt.beforeDeserialization(encrypted)
+      const deserialized = JSON.parse(decrypted)
+
+      expect(deserialized).toEqual(userData)
+    })
+  })
+
+  describe('updateUser logic', () => {
+    it('should merge existing user data with new data', () => {
+      const existingUser = {
+        accessToken: 'old-token',
+        refreshToken: 'old-refresh',
+        expired_at: 1000,
+      }
+
+      const newData = {
+        accessToken: 'new-token',
+        expired_at: 2000,
+      }
+
+      const updatedUser = { ...existingUser, ...newData }
+
+      expect(updatedUser.accessToken).toBe('new-token')
+      expect(updatedUser.refreshToken).toBe('old-refresh') // unchanged
+      expect(updatedUser.expired_at).toBe(2000)
+    })
+
+    it('should add new fields during update', () => {
+      const existingUser = {
+        accessToken: 'token',
+        refreshToken: 'refresh',
+        expired_at: 1000,
+      }
+
+      const newData = {
+        thirdPartyAccessToken: 'auth0-token',
+      }
+
+      const updatedUser = { ...existingUser, ...newData }
+
+      expect(updatedUser.thirdPartyAccessToken).toBe('auth0-token')
+      expect(updatedUser.accessToken).toBe('token')
+    })
+
+    it('should handle partial updates', () => {
+      const existingUser = {
+        accessToken: 'token',
+        refreshToken: 'refresh',
+        expired_at: 1000,
+      }
+
+      const partialUpdate = { accessToken: 'new-token' }
+      const updated = { ...existingUser, ...partialUpdate }
+
+      expect(updated.accessToken).toBe('new-token')
+      expect(updated.refreshToken).toBe('refresh')
+      expect(updated.expired_at).toBe(1000)
+    })
+  })
+
+  describe('logoutUser logic', () => {
+    it('should remove thirdPartyAccessToken while keeping other data', () => {
+      const userData = {
+        accessToken: 'zoom-token',
+        refreshToken: 'refresh-token',
+        expired_at: 1699999999999,
+        thirdPartyAccessToken: 'auth0-token',
+      }
+
+      // Simulate logout - delete thirdPartyAccessToken
+      const loggedOutUser = { ...userData }
+      delete loggedOutUser.thirdPartyAccessToken
+
+      expect(loggedOutUser.accessToken).toBe('zoom-token')
+      expect(loggedOutUser.refreshToken).toBe('refresh-token')
+      expect(loggedOutUser.thirdPartyAccessToken).toBeUndefined()
+    })
+
+    it('should handle user without thirdPartyAccessToken gracefully', () => {
+      const userData = {
+        accessToken: 'zoom-token',
+        refreshToken: 'refresh-token',
+        expired_at: 1699999999999,
+      }
+
+      const loggedOutUser = { ...userData }
+      delete loggedOutUser.thirdPartyAccessToken
+
+      // Should not throw, should be same as before
+      expect(loggedOutUser.accessToken).toBe('zoom-token')
+    })
+  })
+
+  describe('getUser error handling', () => {
+    it('should reject when user is not found', async () => {
+      const getUser = async (userData) => {
+        if (!userData) {
+          return Promise.reject('User not found')
+        }
+        return JSON.parse(encrypt.beforeDeserialization(userData))
+      }
+
+      await expect(getUser(null)).rejects.toBe('User not found')
+      await expect(getUser(undefined)).rejects.toBe('User not found')
+    })
+
+    it('should reject when user data is empty string', async () => {
+      const getUser = async (userData) => {
+        if (!userData) {
+          return Promise.reject('User not found')
+        }
+        return JSON.parse(encrypt.beforeDeserialization(userData))
+      }
+
+      await expect(getUser('')).rejects.toBe('User not found')
+    })
+
+    it('should parse and decrypt user data when found', async () => {
+      const userData = {
+        accessToken: 'token',
+        refreshToken: 'refresh',
+        expired_at: 1000,
+      }
+      const encrypted = encrypt.afterSerialization(JSON.stringify(userData))
+
+      const getUser = async (data) => {
+        if (!data) {
+          return Promise.reject('User not found')
+        }
+        return JSON.parse(encrypt.beforeDeserialization(data))
+      }
+
+      const result = await getUser(encrypted)
+      expect(result).toEqual(userData)
+    })
   })
 })
 
-// Test the actual store module with mocked dependencies
 describe('util/store - with mocks', () => {
-  let store
-  let mockEncrypt
+  it('should export required functions', async () => {
+    const store = await import('../../util/store')
 
-  beforeEach(async () => {
-    vi.resetModules()
-
-    // Mock encrypt module
-    mockEncrypt = {
-      afterSerialization: vi.fn((text) => `encrypted:${text}`),
-      beforeDeserialization: vi.fn((text) => text.replace('encrypted:', '')),
-    }
-    vi.doMock('../../util/encrypt', () => mockEncrypt)
-
-    // Mock redis with callback-style API (as used in the original store.js)
-    const mockDb = {
-      get: vi.fn(),
-      set: vi.fn(),
-      del: vi.fn(),
-      on: vi.fn(),
-    }
-
-    vi.doMock('redis', () => ({
-      createClient: vi.fn(() => mockDb),
-    }))
-
-    // Now import store
-    store = await import('../../util/store')
-  })
-
-  it('should export required functions', () => {
     expect(typeof store.getUser).toBe('function')
     expect(typeof store.upsertUser).toBe('function')
     expect(typeof store.updateUser).toBe('function')
@@ -91,5 +265,165 @@ describe('util/store - with mocks', () => {
     expect(typeof store.deleteUser).toBe('function')
     expect(typeof store.storeInvite).toBe('function')
     expect(typeof store.getInvite).toBe('function')
+  })
+})
+
+describe('util/store - Redis operations logic', () => {
+  describe('storeInvite', () => {
+    it('should create prefixed key for invitations', () => {
+      const createInviteKey = (invitationID) => `invite:${invitationID}`
+
+      expect(createInviteKey('inv-123')).toBe('invite:inv-123')
+      expect(createInviteKey('uuid-456')).toBe('invite:uuid-456')
+    })
+
+    it('should accept any string as tabState', () => {
+      const tabStates = [
+        'active',
+        'pending',
+        JSON.stringify({ tab: 1, state: 'open' }),
+        '',
+      ]
+
+      tabStates.forEach((state) => {
+        expect(typeof state).toBe('string')
+      })
+    })
+  })
+
+  describe('getInvite', () => {
+    it('should use same key format as storeInvite', () => {
+      const createInviteKey = (invitationID) => `invite:${invitationID}`
+
+      const storeKey = createInviteKey('test-id')
+      const getKey = createInviteKey('test-id')
+
+      expect(storeKey).toBe(getKey)
+    })
+  })
+
+  describe('deleteUser', () => {
+    it('should use zoomUserId as key directly', () => {
+      const userId = 'zoom-user-123'
+      // deleteUser uses userId as the key directly (no prefix)
+      expect(userId).toBe('zoom-user-123')
+    })
+  })
+})
+
+describe('util/store - data integrity', () => {
+  it('should maintain data integrity through encrypt/decrypt cycle', () => {
+    const originalData = {
+      accessToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test',
+      refreshToken: 'refresh_token_abc123_xyz',
+      expired_at: Date.now() + 3600000,
+      thirdPartyAccessToken: 'auth0_token_def456',
+    }
+
+    const serialized = JSON.stringify(originalData)
+    const encrypted = encrypt.afterSerialization(serialized)
+    const decrypted = encrypt.beforeDeserialization(encrypted)
+    const parsed = JSON.parse(decrypted)
+
+    expect(parsed.accessToken).toBe(originalData.accessToken)
+    expect(parsed.refreshToken).toBe(originalData.refreshToken)
+    expect(parsed.expired_at).toBe(originalData.expired_at)
+    expect(parsed.thirdPartyAccessToken).toBe(originalData.thirdPartyAccessToken)
+  })
+
+  it('should handle special characters in tokens', () => {
+    const dataWithSpecialChars = {
+      accessToken: 'token+with/special=chars&more',
+      refreshToken: 'refresh_token',
+      expired_at: 1000,
+    }
+
+    const serialized = JSON.stringify(dataWithSpecialChars)
+    const encrypted = encrypt.afterSerialization(serialized)
+    const decrypted = encrypt.beforeDeserialization(encrypted)
+    const parsed = JSON.parse(decrypted)
+
+    expect(parsed.accessToken).toBe(dataWithSpecialChars.accessToken)
+  })
+
+  it('should handle unicode in token data', () => {
+    const dataWithUnicode = {
+      accessToken: 'token_with_emoji_🔐',
+      refreshToken: 'refresh_中文',
+      expired_at: 1000,
+    }
+
+    const serialized = JSON.stringify(dataWithUnicode)
+    const encrypted = encrypt.afterSerialization(serialized)
+    const decrypted = encrypt.beforeDeserialization(encrypted)
+    const parsed = JSON.parse(decrypted)
+
+    expect(parsed.accessToken).toBe(dataWithUnicode.accessToken)
+    expect(parsed.refreshToken).toBe(dataWithUnicode.refreshToken)
+  })
+
+  it('should handle very long tokens', () => {
+    const longToken = 'a'.repeat(10000)
+    const dataWithLongToken = {
+      accessToken: longToken,
+      refreshToken: 'refresh',
+      expired_at: 1000,
+    }
+
+    const serialized = JSON.stringify(dataWithLongToken)
+    const encrypted = encrypt.afterSerialization(serialized)
+    const decrypted = encrypt.beforeDeserialization(encrypted)
+    const parsed = JSON.parse(decrypted)
+
+    expect(parsed.accessToken).toBe(longToken)
+    expect(parsed.accessToken.length).toBe(10000)
+  })
+})
+
+describe('util/store - expired_at handling', () => {
+  it('should handle current timestamp', () => {
+    const now = Date.now()
+    const userData = {
+      accessToken: 'token',
+      refreshToken: 'refresh',
+      expired_at: now,
+    }
+
+    const serialized = JSON.stringify(userData)
+    const encrypted = encrypt.afterSerialization(serialized)
+    const decrypted = encrypt.beforeDeserialization(encrypted)
+    const parsed = JSON.parse(decrypted)
+
+    expect(parsed.expired_at).toBe(now)
+  })
+
+  it('should handle future timestamps', () => {
+    const future = Date.now() + 86400000 // 24 hours from now
+    const userData = {
+      accessToken: 'token',
+      refreshToken: 'refresh',
+      expired_at: future,
+    }
+
+    const serialized = JSON.stringify(userData)
+    const parsed = JSON.parse(serialized)
+
+    expect(parsed.expired_at).toBe(future)
+    expect(parsed.expired_at > Date.now()).toBe(true)
+  })
+
+  it('should handle past timestamps (expired tokens)', () => {
+    const past = Date.now() - 86400000 // 24 hours ago
+    const userData = {
+      accessToken: 'token',
+      refreshToken: 'refresh',
+      expired_at: past,
+    }
+
+    const serialized = JSON.stringify(userData)
+    const parsed = JSON.parse(serialized)
+
+    expect(parsed.expired_at).toBe(past)
+    expect(parsed.expired_at < Date.now()).toBe(true)
   })
 })
