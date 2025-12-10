@@ -54,6 +54,9 @@ module.exports = {
 
   updateUser: async function (zoomUserId, data) {
     const userData = await getAsync(zoomUserId)
+    if (!userData) {
+      return Promise.reject(new Error('User not found'))
+    }
     const existingUser = JSON.parse(encrypt.beforeDeserialization(userData))
     const updatedUser = { ...existingUser, ...data }
 
@@ -65,6 +68,9 @@ module.exports = {
 
   logoutUser: async function (zoomUserId) {
     const reply = await getAsync(zoomUserId)
+    if (!reply) {
+      return Promise.reject(new Error('User not found'))
+    }
     const decrypted = JSON.parse(encrypt.beforeDeserialization(reply))
     delete decrypted.thirdPartyAccessToken
     return setAsync(
