@@ -6,6 +6,7 @@ This guide explains how to transform an existing React application into a Zoom A
 
 - [Prerequisites](#prerequisites)
 - [Architecture Overview](#architecture-overview)
+- [Dual Execution Mode](#dual-execution-mode) ← Run in Zoom AND regular browsers
 - [Quick Start](#quick-start)
 - [Integration Tiers](#integration-tiers)
 - [Backend Requirements](#backend-requirements)
@@ -80,6 +81,406 @@ A functioning Zoom App requires a **frontend + backend + Redis** architecture:
 4. **Frontend loads** → React app initializes, calls `zoomSdk.config()`
 5. **User authorizes** → Frontend calls `/api/zoomapp/authorize` → OAuth flow
 6. **API calls** → Frontend calls `/zoom/api/v2/*` → Backend proxies to Zoom with tokens
+
+---
+
+## Dual Execution Mode
+
+You can build a React app that runs **both inside Zoom and in a regular web browser**. This is useful for:
+
+- Developing/testing without Zoom
+- Providing a web-based version of your app
+- Progressive enhancement (basic features outside Zoom, full features inside)
+
+### How It Works
+
+The Zoom SDK (`zoomSdk`) is only available when running inside Zoom's embedded browser. The hooks detect this and provide fallback behavior:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     YOUR REACT APP                               │
+│                                                                  │
+│  ┌──────────────────────┐    ┌──────────────────────┐          │
+│  │   Running in Zoom    │    │  Running in Browser  │          │
+│  │                      │    │                      │          │
+│  │  zoomSdk = ✓         │    │  zoomSdk = undefined │          │
+│  │  Full functionality  │    │  Graceful fallback   │          │
+│  │  SDK features work   │    │  Web-only features   │          │
+│  └──────────────────────┘    └──────────────────────┘          │
+│                                                                  │
+│              useZoomApp() detects environment                    │
+│              and returns appropriate state                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Detection Helper
+
+Create a utility to detect the Zoom environment:
+
+```javascript
+// src/utils/zoomDetect.js
+
+/**
+ * Check if running inside Zoom's embedded browser
+ */
+export function isInsideZoom() {
+  return typeof window !== 'undefined' && typeof window.zoomSdk !== 'undefined'
+}
+
+/**
+ * Check if the Zoom SDK script is loaded
+ */
+export function isZoomSdkLoaded() {
+  return typeof zoomSdk !== 'undefined'
+}
+```
+
+### Modified Hooks for Dual Execution
+
+Wrap the existing hooks to handle non-Zoom environments:
+
+```javascript
+// src/hooks/useZoomAppSafe.js
+import { useState, useEffect } from 'react'
+import { isInsideZoom } from '../utils/zoomDetect'
+
+// Import the real hook
+import { useZoomApp as useZoomAppReal } from './useZoomApp'
+
+/**
+ * Safe wrapper for useZoomApp that works outside Zoom
+ */
+export function useZoomApp(capabilities = [], options = {}) {
+  const [isZoom, setIsZoom] = useState(false)
+
+  useEffect(() => {
+    setIsZoom(isInsideZoom())
+  }, [])
+
+  // Use the real hook when inside Zoom
+  const zoomState = useZoomAppReal(
+    isZoom ? capabilities : [],
+    isZoom ? options : { autoReconfigure: false }
+  )
+
+  // Return fallback state when outside Zoom
+  if (!isZoom) {
+    return {
+      // State
+      configured: true,        // Pretend we're configured
+      runningContext: 'browser', // Custom context for web
+      userContextStatus: null,
+      error: null,
+
+      // Methods
+      reconfigure: () => {},
+
+      // Helpers
+      isInMeeting: false,
+      isInClient: false,
+      isAuthorized: false,
+      isGuest: false,
+      isInZoom: false,         // NEW: indicates Zoom environment
+      isInBrowser: true,       // NEW: indicates browser environment
+    }
+  }
+
+  return {
+    ...zoomState,
+    isInZoom: true,
+    isInBrowser: false,
+  }
+}
+```
+
+```javascript
+// src/hooks/useZoomAuthSafe.js
+import { isInsideZoom } from '../utils/zoomDetect'
+import { useZoomAuth as useZoomAuthReal } from './useZoomAuth'
+
+/**
+ * Safe wrapper for useZoomAuth that works outside Zoom
+ */
+export function useZoomAuth(options = {}) {
+  const isZoom = isInsideZoom()
+
+  // Use real hook inside Zoom
+  const zoomAuth = useZoomAuthReal(isZoom ? options : {})
+
+  if (!isZoom) {
+    return {
+      // State
+      isAuthorized: false,
+      isGuest: false,
+      userContextStatus: null,
+      error: null,
+      isAuthorizing: false,
+
+      // Methods - no-ops outside Zoom
+      authorize: async () => {
+        console.warn('authorize() called outside Zoom - no-op')
+        return false
+      },
+      promptAuthorize: async () => {
+        console.warn('promptAuthorize() called outside Zoom - no-op')
+        return false
+      },
+      startAuth: async () => {
+        console.warn('startAuth() called outside Zoom - no-op')
+        return false
+      },
+
+      // Helpers
+      isInZoom: false,
+    }
+  }
+
+  return { ...zoomAuth, isInZoom: true }
+}
+```
+
+```javascript
+// src/hooks/useZoomConnectSafe.js
+import { isInsideZoom } from '../utils/zoomDetect'
+import { useZoomConnect as useZoomConnectReal } from './useZoomConnect'
+
+/**
+ * Safe wrapper for useZoomConnect that works outside Zoom
+ */
+export function useZoomConnect(runningContext, options = {}) {
+  const isZoom = isInsideZoom()
+
+  const zoomConnect = useZoomConnectReal(
+    isZoom ? runningContext : null,
+    isZoom ? options : {}
+  )
+
+  if (!isZoom) {
+    return {
+      // State
+      connected: false,
+      lastMessage: null,
+      error: null,
+
+      // Methods
+      sendMessage: async (payload) => {
+        console.warn('sendMessage() called outside Zoom - no-op', payload)
+        return false
+      },
+
+      // Helpers
+      isInMeeting: false,
+      isInClient: false,
+      canSendMessage: false,
+      isInZoom: false,
+    }
+  }
+
+  return { ...zoomConnect, isInZoom: true }
+}
+```
+
+### Safe API Utilities
+
+```javascript
+// src/utils/zoomApiSafe.js
+import { isInsideZoom } from './zoomDetect'
+import * as zoomApi from './zoomApi'
+
+/**
+ * Wrap any Zoom API call to be safe outside Zoom
+ */
+export async function callZoomApiSafe(apiName, options = null) {
+  if (!isInsideZoom()) {
+    console.warn(`${apiName}() called outside Zoom - returning mock response`)
+    return {
+      success: false,
+      error: new Error('Not running inside Zoom'),
+      isInZoom: false,
+    }
+  }
+  return zoomApi.callZoomApi(apiName, options)
+}
+
+// Safe versions of all utilities
+export async function showNotification(title, message, type = 'info') {
+  if (!isInsideZoom()) {
+    // Fallback: use browser notification or console
+    console.log(`[Zoom Notification] ${title}: ${message}`)
+    if (Notification.permission === 'granted') {
+      new Notification(title, { body: message })
+    }
+    return { success: true, isInZoom: false }
+  }
+  return zoomApi.showNotification(title, message, type)
+}
+
+export async function openUrl(url) {
+  if (!isInsideZoom()) {
+    // Fallback: open in new tab
+    window.open(url, '_blank')
+    return { success: true, isInZoom: false }
+  }
+  return zoomApi.openUrl(url)
+}
+
+// Export all others with safety wrapper
+export const getMeetingContext = () => callZoomApiSafe('getMeetingContext')
+export const getRunningContext = () => callZoomApiSafe('getRunningContext')
+export const getMeetingParticipants = () => callZoomApiSafe('getMeetingParticipants')
+// ... etc
+```
+
+### Updated Barrel Exports
+
+```javascript
+// src/hooks/index.js
+// Export both safe and original versions
+
+// Safe versions (recommended for dual-execution apps)
+export { useZoomApp } from './useZoomAppSafe'
+export { useZoomAuth } from './useZoomAuthSafe'
+export { useZoomConnect } from './useZoomConnectSafe'
+
+// Original versions (for Zoom-only apps)
+export { useZoomApp as useZoomAppStrict } from './useZoomApp'
+export { useZoomAuth as useZoomAuthStrict } from './useZoomAuth'
+export { useZoomConnect as useZoomConnectStrict } from './useZoomConnect'
+```
+
+### Complete Dual-Execution Example
+
+```javascript
+import { useZoomApp, useZoomAuth } from './hooks'
+import { showNotification, openUrl } from './utils/zoomApiSafe'
+
+function App() {
+  const {
+    configured,
+    runningContext,
+    isInZoom,
+    isInBrowser,
+  } = useZoomApp([
+    'getSupportedJsApis',
+    'showNotification',
+    'openUrl',
+  ])
+
+  const { isAuthorized, startAuth } = useZoomAuth({
+    onAuthorized: () => console.log('Authorized!'),
+  })
+
+  const handleNotify = async () => {
+    await showNotification('Hello', 'This works in both environments!')
+  }
+
+  const handleOpenDocs = async () => {
+    await openUrl('https://developers.zoom.us/docs/')
+  }
+
+  return (
+    <div>
+      <h1>My Hybrid App</h1>
+
+      {/* Environment indicator */}
+      <div className="environment-badge">
+        {isInZoom ? '🎥 Running in Zoom' : '🌐 Running in Browser'}
+      </div>
+
+      <p>Context: {runningContext}</p>
+
+      {/* Features available everywhere */}
+      <button onClick={handleNotify}>Show Notification</button>
+      <button onClick={handleOpenDocs}>Open Docs</button>
+
+      {/* Zoom-only features */}
+      {isInZoom && (
+        <div className="zoom-features">
+          <h2>Zoom Features</h2>
+          {!isAuthorized && (
+            <button onClick={startAuth}>Authorize with Zoom</button>
+          )}
+          {isAuthorized && <p>✓ Authorized</p>}
+        </div>
+      )}
+
+      {/* Browser-only features */}
+      {isInBrowser && (
+        <div className="browser-features">
+          <h2>Web Features</h2>
+          <p>Some features require running inside Zoom.</p>
+          <a href="/install">Install Zoom App</a>
+        </div>
+      )}
+    </div>
+  )
+}
+```
+
+### Conditional SDK Script Loading
+
+You can optionally load the SDK only when needed:
+
+```html
+<!-- public/index.html -->
+<head>
+  <script>
+    // Only load Zoom SDK if we might be in Zoom
+    // (check for Zoom user agent or query param)
+    if (
+      navigator.userAgent.includes('ZoomWebKit') ||
+      window.location.search.includes('source=zoom')
+    ) {
+      var script = document.createElement('script');
+      script.src = 'https://appssdk.zoom.us/sdk.min.js';
+      document.head.appendChild(script);
+    }
+  </script>
+</head>
+```
+
+Or always load it (simpler, minimal overhead):
+
+```html
+<head>
+  <script src="https://appssdk.zoom.us/sdk.min.js"></script>
+</head>
+```
+
+### Testing Dual Execution
+
+```bash
+# Test in browser (no Zoom)
+npm start
+# Open http://localhost:3000 - should show "Running in Browser"
+
+# Test in Zoom
+docker compose up
+ngrok http 8000
+# Open app in Zoom client - should show "Running in Zoom"
+```
+
+### Feature Availability Matrix
+
+| Feature | In Zoom | In Browser | Fallback |
+|---------|---------|------------|----------|
+| `useZoomApp` | Full SDK config | Mock state | `runningContext: 'browser'` |
+| `useZoomAuth` | OAuth flow | No-op | Returns `isAuthorized: false` |
+| `useZoomConnect` | Cross-instance | No-op | Returns `connected: false` |
+| `showNotification` | Zoom notification | Browser Notification API | Console log |
+| `openUrl` | Opens in browser | `window.open()` | Same behavior |
+| `getMeetingContext` | Meeting data | Error | `{ success: false }` |
+| `cloudRecording` | Controls recording | Error | `{ success: false }` |
+| `setVirtualBackground` | Sets background | Error | `{ success: false }` |
+
+### Best Practices for Dual Execution
+
+1. **Always check `isInZoom`** before using Zoom-specific features
+2. **Provide meaningful fallbacks** for essential features
+3. **Show clear UI indicators** for which environment the user is in
+4. **Don't block the app** if Zoom features aren't available
+5. **Use feature detection**, not environment detection, where possible
+6. **Test in both environments** regularly
 
 ---
 
