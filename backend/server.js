@@ -56,6 +56,9 @@ app.get('/hello', (req, res) => {
 // Proxy frontend static assets (Vite builds to /assets)
 app.use('/assets', frontendProxy)
 
+// Proxy root to frontend
+app.get('/', frontendProxy)
+
 // Handle 404
 app.use((req, res, next) => {
   const error = new Error('Not found')

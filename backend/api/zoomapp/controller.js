@@ -284,5 +284,20 @@ module.exports = {
     target: process.env.ZOOM_APP_CLIENT_URL,
     changeOrigin: true,
     ws: true,
+    logLevel: 'debug',
+    pathRewrite: {
+      '^/api/zoomapp/proxy': '', // Strip the proxy prefix, forward to root
+    },
+    onProxyReq: (proxyReq, req, res) => {
+      console.log(`[Proxy] ${req.method} ${req.originalUrl} -> ${process.env.ZOOM_APP_CLIENT_URL}${proxyReq.path}`)
+    },
+    onProxyRes: (proxyRes, req, res) => {
+      console.log(`[Proxy] Response: ${proxyRes.statusCode} for ${req.originalUrl}`)
+    },
+    onError: (err, req, res) => {
+      console.error(`[Proxy] ERROR for ${req.originalUrl}:`, err.message)
+      console.error(`[Proxy] Target: ${process.env.ZOOM_APP_CLIENT_URL}`)
+      console.error(`[Proxy] Error code: ${err.code}`)
+    },
   }),
 }
